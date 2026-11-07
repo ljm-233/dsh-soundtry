@@ -23,15 +23,21 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** Linux 移植：Win 与 POSIX 的 venv / 可执行名不同，全部走这一处判断。 */
+const IS_WIN = process.platform === 'win32';
 export const PLUGIN_ROOT = resolve(HERE, '..');
 export const VENV_DIR = join(PLUGIN_ROOT, 'runtime', 'venv');
-export const VENV_PY = join(VENV_DIR, 'Scripts', 'python.exe');
+export const VENV_PY = IS_WIN
+  ? join(VENV_DIR, 'Scripts', 'python.exe')
+  : join(VENV_DIR, 'bin', 'python');
 export const MODELS_DIR = join(PLUGIN_ROOT, 'models');
 const RUNTIME_DIR = join(PLUGIN_ROOT, 'runtime');
 const MARKER = join(RUNTIME_DIR, 'ready.json');
 const MANIFEST_PATH = join(PLUGIN_ROOT, 'deps.manifest.json');
 
-const TORCH_LIB_REL = join('Lib', 'site-packages', 'torch', 'lib');
+const TORCH_LIB_REL = IS_WIN
+  ? join('Lib', 'site-packages', 'torch', 'lib')
+  : join('lib', 'python3.12', 'site-packages', 'torch', 'lib');
 
 export function homeDir(env = process.env) {
   return env.DSH_HOME?.trim() || join(homedir(), '.dsh');
@@ -148,7 +154,18 @@ export function detectBasePython(env = process.env, cfg = loadConfig(env)) {
       if (hit) return { ...hit, tried };
     }
   }
-  for (const base of ['D:/ComfyUI', 'C:/ComfyUI', 'E:/ComfyUI']) {
+  if (!IS_WIN) {
+    for (const rel of [
+      join(PLUGIN_ROOT, 'runtime', 'venv', 'bin', 'python'),
+      '/usr/bin/python3.12',
+      '/usr/bin/python3.11',
+      '/usr/bin/python3',
+    ]) {
+      hit = take(rel, `POSIX 候选 ${rel}`)
+      if (hit) return { ...hit, tried }
+    }
+  }
+  for (const base of IS_WIN ? ['D:/ComfyUI', 'C:/ComfyUI', 'E:/ComfyUI'] : []) {
     if (!fs.existsSync(base)) continue;
     for (const d of fs.readdirSync(base)) {
       for (const rel of ['python/python.exe', 'python_embeded/python.exe']) {
@@ -276,14 +293,17 @@ async function ensureAssets(manifest, log, signal) {
  * 这样插件不依赖任何别的插件，也不重复下载 60 MB。
  */
 async function ensureFfmpeg(env, cfg, log) {
-  const dst = join(PLUGIN_ROOT, 'vendor', 'ffmpeg', 'ffmpeg.exe');
+  const exe = IS_WIN ? 'ffmpeg.exe' : 'ffmpeg';
+  const dst = join(PLUGIN_ROOT, 'vendor', 'ffmpeg', exe);
   if (fs.existsSync(dst)) return dst;
   const cands = [
     env.DSH_FFMPEG_PATH,
     env.SOUNDTRY_FFMPEG,
     cfg.ffmpeg,
-    join(PLUGIN_ROOT, '..', 'dsh-cixisound', 'vendor', 'ffmpeg', 'ffmpeg.exe'),
-    join(PLUGIN_ROOT, '..', 'dsh-video-vision', 'node_modules', '@ffmpeg-installer', 'win32-x64', 'ffmpeg.exe'),
+    // POSIX：系统包管理器装的那份最稳，直接用它，不复制
+    ...(IS_WIN ? [] : ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']),
+    join(PLUGIN_ROOT, '..', 'dsh-cixisound', 'vendor', 'ffmpeg', exe),
+    join(PLUGIN_ROOT, '..', 'dsh-video-vision', 'node_modules', '@ffmpeg-installer', IS_WIN ? 'win32-x64' : 'linux-x64', exe),
   ].filter(Boolean);
   for (const c of cands) {
     if (fs.existsSync(c)) {
